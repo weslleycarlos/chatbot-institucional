@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 # Variável global para controlar o vectorstore
 vectorstore = None
+_chroma_client = None
 
 # --- DIAGNÓSTICO DE IMPORTAÇÃO ---
 try:
@@ -103,27 +104,80 @@ def get_llm_components():
 
 def get_vectorstore():
     """Obtém ou cria o vectorstore com gerenciamento de conexão"""
-    global vectorstore
+    global vectorstore, _chroma_client
+    
     if vectorstore is None:
         embeddings, _ = get_llm_components()
-        vectorstore = Chroma(
-            persist_directory=PERSIST_DIRECTORY, 
-            embedding_function=embeddings
+        
+        # ✅ Cria cliente persistente para ter controle sobre ele
+        import chromadb
+        from chromadb.config import Settings
+        
+        _chroma_client = chromadb.PersistentClient(
+            path=PERSIST_DIRECTORY,
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=True  # ✅ Permite reset
+            )
         )
+        
+        vectorstore = Chroma(
+            client=_chroma_client,
+            embedding_function=embeddings,
+            collection_name="govbot_docs"
+        )
+    
     return vectorstore
 
 def close_vectorstore():
-    """Fecha explicitamente o vectorstore para liberar arquivos"""
-    global vectorstore
-    if vectorstore is None:
-        return
+    """Fecha COMPLETAMENTE o vectorstore e libera arquivos"""
+    global vectorstore, _chroma_client
+    
+    print("🔒 Iniciando fechamento do Chroma...")
     
     try:
-        vectorstore = None
+        # 1. Remove referência do vectorstore
+        if vectorstore is not None:
+            # Tenta acessar e limpar o client interno
+            if hasattr(vectorstore, '_client'):
+                try:
+                    vectorstore._client.clear_system_cache()
+                except:
+                    pass
+            vectorstore = None
+            print("   ✅ Vectorstore liberado")
+        
+        # 2. Fecha o client do Chroma
+        if _chroma_client is not None:
+            try:
+                # ✅ Método correto para fechar conexões
+                _chroma_client.clear_system_cache()
+            except Exception as e:
+                print(f"   ⚠️ Erro ao limpar cache: {e}")
+            
+            try:
+                # Força a desconexão do SQLite
+                if hasattr(_chroma_client, '_identifier_to_system'):
+                    _chroma_client._identifier_to_system.clear()
+            except:
+                pass
+            
+            _chroma_client = None
+            print("   ✅ Client Chroma liberado")
+        
+        # 3. Força coleta de lixo agressiva
         gc.collect()
-        print("✅ Vectorstore fechado")
+        gc.collect()  # Duas vezes para garantir
+        
+        # 4. No Windows, precisa esperar mais
+        time.sleep(3)
+        
+        print("✅ Vectorstore completamente fechado")
+        
     except Exception as e:
         print(f"⚠️ Erro ao fechar vectorstore: {e}")
+        vectorstore = None
+        _chroma_client = None
 
 # --- 4. ENDPOINTS ---
 
@@ -268,114 +322,155 @@ async def upload_document(file: UploadFile = File(...), username: str = Depends(
 
 @app.delete("/limpar_base")
 async def limpar_base(username: str = Depends(verificar_credenciais)):
-    """Limpeza completa da base com gerenciamento de conexões"""
-    global vectorstore
+    """Limpeza completa da base - versão Windows-safe"""
+    global vectorstore, _chroma_client
     
     try:
-        print("🧹 INICIANDO LIMPEZA COM GESTÃO DE CONEXÕES...")
+        print("🧹 INICIANDO LIMPEZA (Windows-safe)...")
         
-        # 1. Fecha o vectorstore atual
-        print("🔒 Fechando conexões Chroma...")
-        close_vectorstore()
-        time.sleep(2)
+        # ============================================
+        # ESTRATÉGIA 1: Reset via API do Chroma
+        # ============================================
+        print("🔄 Tentando reset via API do Chroma...")
         
-        # 2. Tenta remover com múltiplas estratégias
-        max_attempts = 3
-        success = False
-        
-        for attempt in range(max_attempts):
-            try:
-                if not os.path.exists(PERSIST_DIRECTORY):
-                    print("ℹ️ Pasta já não existe")
-                    success = True
-                    break
-                    
-                print(f"🗑️ Tentativa {attempt + 1} - Removendo {PERSIST_DIRECTORY}...")
-                shutil.rmtree(PERSIST_DIRECTORY)
-                print("✅ Pasta removida com sucesso!")
-                success = True
-                break
+        try:
+            if _chroma_client is not None:
+                # ✅ Método mais limpo: usa o reset do próprio Chroma
+                _chroma_client.reset()
+                print("✅ Reset do Chroma executado!")
                 
-            except PermissionError as e:
-                print(f"⚠️ PermissionError na tentativa {attempt + 1}: {e}")
+                # Fecha tudo
+                close_vectorstore()
+                time.sleep(2)
                 
-                if attempt < max_attempts - 1:
-                    try:
-                        print("🔄 Tentando remover arquivos individualmente...")
-                        for root, dirs, files in os.walk(PERSIST_DIRECTORY, topdown=False):
-                            for name in files:
-                                file_path = os.path.join(root, name)
-                                try:
-                                    os.chmod(file_path, 0o777)
-                                    os.remove(file_path)
-                                    print(f"   ✅ Removido: {name}")
-                                except Exception as file_error:
-                                    print(f"   ❌ Falha em {name}: {file_error}")
-                            
-                            for name in dirs:
-                                dir_path = os.path.join(root, name)
-                                try:
-                                    os.rmdir(dir_path)
-                                except Exception as dir_error:
-                                    print(f"   ❌ Falha na pasta {name}: {dir_error}")
-                        
-                        if os.path.exists(PERSIST_DIRECTORY):
-                            os.rmdir(PERSIST_DIRECTORY)
-                        success = True
-                        break
-                        
-                    except Exception as inner_error:
-                        print(f"❌ Estratégia individual falhou: {inner_error}")
-                        time.sleep(2)
-                else:
-                    print("❌ Todas as tentativas falharam!")
+                # Remove pasta agora que está liberada
+                if os.path.exists(PERSIST_DIRECTORY):
+                    shutil.rmtree(PERSIST_DIRECTORY)
+                    print("✅ Pasta removida após reset")
+                
+                # Limpa uploads
+                if os.path.exists(UPLOAD_DIR):
+                    shutil.rmtree(UPLOAD_DIR)
+                os.makedirs(UPLOAD_DIR, exist_ok=True)
+                
+                # Recria vectorstore vazio
+                vs = get_vectorstore()
+                docs = vs.get()
+                
+                return {
+                    "status": "Base COMPLETAMENTE limpa (via reset)",
+                    "chunks_restantes": len(docs['ids'])
+                }
+                
+        except Exception as reset_error:
+            print(f"⚠️ Reset falhou: {reset_error}")
         
-        if not success:
-            return {
-                "status": "erro", 
-                "detalhes": "Não foi possível remover os arquivos. O ChromaDB pode estar bloqueado. Reinicie o servidor."
-            }
+        # ============================================
+        # ESTRATÉGIA 2: Deletar coleção e recriar
+        # ============================================
+        print("🔄 Tentando deletar coleção...")
         
-        # 3. Remove arquivos Chroma soltos
-        chroma_files = ["chroma.sqlite3", "chroma.sqlite3-wal", "chroma.sqlite3-shm"]
-        for file_pattern in chroma_files:
-            for file_path in glob.glob(f"./{file_pattern}"):
+        try:
+            if _chroma_client is not None:
+                # Deleta a coleção em vez da pasta
                 try:
-                    if os.path.exists(file_path):
-                        os.chmod(file_path, 0o777)
-                        os.remove(file_path)
-                        print(f"🗑️ Removido: {file_path}")
-                except Exception as e:
-                    print(f"⚠️ Não foi possível remover {file_path}: {e}")
+                    _chroma_client.delete_collection("govbot_docs")
+                    print("✅ Coleção deletada!")
+                except:
+                    pass
+                
+                # Fecha e recria
+                close_vectorstore()
+                time.sleep(2)
+                
+                # Tenta remover pasta
+                if os.path.exists(PERSIST_DIRECTORY):
+                    try:
+                        shutil.rmtree(PERSIST_DIRECTORY)
+                    except:
+                        pass
+                
+                # Limpa uploads
+                if os.path.exists(UPLOAD_DIR):
+                    try:
+                        shutil.rmtree(UPLOAD_DIR)
+                    except:
+                        pass
+                os.makedirs(UPLOAD_DIR, exist_ok=True)
+                
+                # Recria
+                vs = get_vectorstore()
+                docs = vs.get()
+                
+                return {
+                    "status": "Base limpa (coleção recriada)",
+                    "chunks_restantes": len(docs['ids'])
+                }
+                
+        except Exception as delete_error:
+            print(f"⚠️ Delete coleção falhou: {delete_error}")
         
-        # 4. Limpa uploads
-        if os.path.exists(UPLOAD_DIR):
+        # ============================================
+        # ESTRATÉGIA 3: Forçar fechamento e deletar
+        # ============================================
+        print("🔄 Tentando força bruta...")
+        
+        # Fecha tudo
+        close_vectorstore()
+        
+        # Espera mais tempo no Windows
+        print("⏳ Aguardando liberação de arquivos (5s)...")
+        time.sleep(5)
+        
+        # Força gc novamente
+        gc.collect()
+        gc.collect()
+        
+        # Tenta deletar
+        if os.path.exists(PERSIST_DIRECTORY):
             try:
-                shutil.rmtree(UPLOAD_DIR)
-                print(f"🗑️ Uploads removidos: {UPLOAD_DIR}")
-            except Exception as e:
-                print(f"⚠️ Erro ao remover uploads: {e}")
+                shutil.rmtree(PERSIST_DIRECTORY)
+                print("✅ Pasta removida!")
+            except PermissionError:
+                # ============================================
+                # ESTRATÉGIA 4: Marcar para deletar no restart
+                # ============================================
+                print("⚠️ Arquivos bloqueados - marcando para limpeza no restart")
+                
+                # Cria arquivo de flag
+                with open(".cleanup_needed", "w") as f:
+                    f.write("cleanup")
+                
+                # Limpa uploads pelo menos
+                if os.path.exists(UPLOAD_DIR):
+                    try:
+                        shutil.rmtree(UPLOAD_DIR)
+                    except:
+                        pass
+                os.makedirs(UPLOAD_DIR, exist_ok=True)
+                
+                return {
+                    "status": "parcial",
+                    "detalhes": "Arquivos bloqueados pelo Windows. REINICIE O SERVIDOR para completar a limpeza.",
+                    "acao_necessaria": "Pare o servidor (Ctrl+C) e inicie novamente"
+                }
         
-        # 5. Recria estrutura
+        # Limpa uploads
+        if os.path.exists(UPLOAD_DIR):
+            shutil.rmtree(UPLOAD_DIR)
         os.makedirs(UPLOAD_DIR, exist_ok=True)
         
-        # 6. Recria o vectorstore vazio
-        print("🆕 Recriando Chroma vazio...")
+        # Recria
         vs = get_vectorstore()
-        
-        # 7. Verificação final
-        docs_after = vs.get()
-        chunks_remaining = len(docs_after['ids'])
-        
-        print(f"🎉 LIMPEZA CONCLUÍDA! Chunks restantes: {chunks_remaining}")
+        docs = vs.get()
         
         return {
-            "status": "Base COMPLETAMENTE limpa", 
-            "chunks_restantes": chunks_remaining
+            "status": "Base COMPLETAMENTE limpa",
+            "chunks_restantes": len(docs['ids'])
         }
         
     except Exception as e:
-        print(f"💥 ERRO CRÍTICO: {e}")
+        print(f"💥 ERRO: {e}")
         return {"status": "erro", "detalhes": str(e)}
 
 @app.get("/verificar_limpeza")
