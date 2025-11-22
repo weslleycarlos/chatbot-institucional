@@ -1,22 +1,47 @@
---- Python ---
-
-pycache/
+# --- Python ---
+__pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
 venv/
+ENV/
 .env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
 
---- Dados Locais (Não subir banco de dados nem arquivos) ---
-
+# --- Dados Locais (Não subir banco de dados nem arquivos) ---
 backend/db_chroma/
 backend/uploads/
+*.sqlite3
+*.db
+*.log
 
---- Node.js / React ---
-
+# --- Node.js / React ---
 frontend/node_modules/
 frontend/dist/
+frontend/build/
+frontend/.env
 frontend/.env.local
+frontend/.env*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp.*
 
---- Sistema Operacional ---
-
+# --- Sistema Operacional ---
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Temporários ---
+*.tmp
+*.temp

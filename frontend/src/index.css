@@ -2,8 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Scrollbar personalizada para um look mais limpo */
 @layer utilities {
+  /* ============================================
+     SCROLLBAR PERSONALIZADA
+     ============================================ */
+  
   /* Webkit (Chrome, Safari, Edge) */
   ::-webkit-scrollbar {
     width: 8px;
@@ -23,17 +26,105 @@
     background: #94a3b8; 
   }
 
-  /* Animação suave de entrada */
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+
+  /* ============================================
+     ANIMAÇÕES
+     ============================================ */
+  
+  /* Fade In - entrada suave */
   .animate-fade-in {
     animation: fadeIn 0.3s ease-in-out;
   }
   
   @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(5px); }
-    to { opacity: 1; transform: translateY(0); }
+    from { 
+      opacity: 0; 
+      transform: translateY(5px); 
+    }
+    to { 
+      opacity: 1; 
+      transform: translateY(0); 
+    }
+  }
+
+  /* Slide Up - para mensagens */
+  .animate-slide-up {
+    animation: slideUp 0.3s ease-out;
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Pulse suave - para indicadores */
+  .animate-pulse-soft {
+    animation: pulseSoft 2s ease-in-out infinite;
+  }
+
+  @keyframes pulseSoft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
   }
 }
 
+/* ============================================
+   ESTILOS BASE
+   ============================================ */
+
 body {
-  @apply bg-slate-50 text-slate-900;
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+/* Previne scroll horizontal */
+html, body {
+  overflow-x: hidden;
+}
+
+/* ============================================
+   TEXTAREA AUTO-RESIZE
+   ============================================ */
+
+textarea {
+  field-sizing: content; /* Propriedade moderna - fallback no JS */
+}
+
+/* ============================================
+   FOCUS VISIBLE (Acessibilidade)
+   ============================================ */
+
+:focus-visible {
+  @apply outline-2 outline-offset-2 outline-blue-500;
+}
+
+/* Remove outline padrão em elementos focados via mouse */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ============================================
+   SELEÇÃO DE TEXTO
+   ============================================ */
+
+::selection {
+  @apply bg-blue-200 text-blue-900;
+}
+
+/* ============================================
+   LINKS (se usar fora do chat)
+   ============================================ */
+
+a:not([class]) {
+  @apply text-blue-600 hover:text-blue-800 underline-offset-2 hover:underline transition-colors;
 }
