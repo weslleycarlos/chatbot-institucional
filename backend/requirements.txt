@@ -1,1 +1,13 @@
-fastapiuvicornpython-multipartlangchain-communitylangchain-google-genaichromadbpypdfdocx2txtwatchdogrequests
+fastapi
+uvicorn
+python-multipart
+langchain
+langchain-text-splitters
+langchain-community
+langchain-google-genai
+chromadb
+pypdf
+docx2txt
+watchdog
+requests
+numpy
