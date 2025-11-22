@@ -1,0 +1,22 @@
+--- Python ---
+
+pycache/
+*.py[cod]
+venv/
+.env
+
+--- Dados Locais (Não subir banco de dados nem arquivos) ---
+
+backend/db_chroma/
+backend/uploads/
+
+--- Node.js / React ---
+
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+--- Sistema Operacional ---
+
+.DS_Store
+Thumbs.db
