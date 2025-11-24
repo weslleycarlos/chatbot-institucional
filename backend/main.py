@@ -9,8 +9,9 @@ from contextlib import asynccontextmanager
 from typing import List, Optional
 from dotenv import load_dotenv
 
+# Carrega variáveis de ambiente
 load_dotenv()
-# Variável global para controlar o vectorstore
+
 vectorstore = None
 _chroma_client = None
 
@@ -27,10 +28,8 @@ try:
 except ImportError as e:
     print("\n" + "="*60)
     print("ERRO CRÍTICO DE BIBLIOTECA FALTANDO")
-    print("="*60)
     print(f"O Python não encontrou: {e}")
-    print("SOLUÇÃO: Execute:")
-    print("pip install langchain-huggingface")
+    print("SOLUÇÃO: pip install langchain-huggingface python-dotenv psutil")
     print("="*60 + "\n")
     sys.exit(1)
 
@@ -40,21 +39,20 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Tenta importar a configuração de proxy
 try:
     from proxy_config import configurar_proxy
 except ImportError:
-    def configurar_proxy():
-        pass
+    def configurar_proxy(): pass
 
 # --- 1. CONFIGURAÇÕES ---
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-
-
 PERSIST_DIRECTORY = "./db_chroma"
 UPLOAD_DIR = "./uploads"
+MODELO_LOCAL_DIR = "./modelo_local" # Pasta onde os arquivos baixados DEVEM estar
+
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(MODELO_LOCAL_DIR, exist_ok=True) # Cria a pasta se não existir
 
 ADMIN_USER = "admin"
 ADMIN_PASS = "senha_secreta_123"
@@ -64,9 +62,23 @@ ADMIN_PASS = "senha_secreta_123"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🔄 Inicializando GovBot API...")
+    if not GOOGLE_API_KEY:
+        print("⚠️ AVISO: GOOGLE_API_KEY não encontrada no arquivo .env")
+    
+    # Verificação CRÍTICA do Modelo Offline
+    if not os.listdir(MODELO_LOCAL_DIR):
+        print("\n" + "!"*60)
+        print("❌ ERRO FATAL: MODELO DE IA NÃO ENCONTRADO LOCALMENTE")
+        print(f"A pasta '{MODELO_LOCAL_DIR}' está vazia.")
+        print("Devido ao Proxy da sua rede, o download automático falhou.")
+        print("SOLUÇÃO: Baixe os arquivos do modelo 'sentence-transformers/all-MiniLM-L6-v2'")
+        print("e coloque-os manualmente dentro da pasta backend/modelo_local.")
+        print("!"*60 + "\n")
+    
     configurar_proxy()
     yield
     print("🛑 Desligando GovBot API...")
+    close_vectorstore()
 
 app = FastAPI(title="GovBot Intranet API", lifespan=lifespan)
 
@@ -94,31 +106,39 @@ def verificar_credenciais(credentials: HTTPBasicCredentials = Depends(security))
     return credentials.username
 
 def get_llm_components():
-    """Retorna embeddings locais e modelo Gemini"""
+    """
+    Retorna embeddings (Local) e LLM (Google).
+    Agora força o uso da pasta local para evitar travamento no Proxy.
+    """
+    # Se a pasta estiver vazia, usamos o nome online como fallback, 
+    # mas isso provavelmente falhará no seu proxy.
+    model_source = MODELO_LOCAL_DIR
+    if not os.listdir(MODELO_LOCAL_DIR):
+        print("⚠️ AVISO: Usando download online (pode falhar no proxy)...")
+        model_source = "sentence-transformers/all-MiniLM-L6-v2"
+    else:
+        print(f"✅ Usando modelo OFFLINE carregado de: {MODELO_LOCAL_DIR}")
+
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_name=model_source,
         model_kwargs={'device': 'cpu'}
     )
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0.2)
+    
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite-preview-02-05", temperature=0.2)
     return embeddings, llm
 
 def get_vectorstore():
-    """Obtém ou cria o vectorstore com gerenciamento de conexão"""
     global vectorstore, _chroma_client
     
     if vectorstore is None:
         embeddings, _ = get_llm_components()
         
-        # ✅ Cria cliente persistente para ter controle sobre ele
         import chromadb
         from chromadb.config import Settings
         
         _chroma_client = chromadb.PersistentClient(
             path=PERSIST_DIRECTORY,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True  # ✅ Permite reset
-            )
+            settings=Settings(anonymized_telemetry=False, allow_reset=True)
         )
         
         vectorstore = Chroma(
@@ -126,58 +146,23 @@ def get_vectorstore():
             embedding_function=embeddings,
             collection_name="govbot_docs"
         )
-    
     return vectorstore
 
 def close_vectorstore():
-    """Fecha COMPLETAMENTE o vectorstore e libera arquivos"""
     global vectorstore, _chroma_client
-    
-    print("🔒 Iniciando fechamento do Chroma...")
-    
+    print("🔒 Fechando Chroma...")
     try:
-        # 1. Remove referência do vectorstore
-        if vectorstore is not None:
-            # Tenta acessar e limpar o client interno
-            if hasattr(vectorstore, '_client'):
-                try:
-                    vectorstore._client.clear_system_cache()
-                except:
-                    pass
+        if vectorstore:
             vectorstore = None
-            print("   ✅ Vectorstore liberado")
-        
-        # 2. Fecha o client do Chroma
-        if _chroma_client is not None:
-            try:
-                # ✅ Método correto para fechar conexões
-                _chroma_client.clear_system_cache()
-            except Exception as e:
-                print(f"   ⚠️ Erro ao limpar cache: {e}")
-            
-            try:
-                # Força a desconexão do SQLite
-                if hasattr(_chroma_client, '_identifier_to_system'):
-                    _chroma_client._identifier_to_system.clear()
-            except:
-                pass
-            
+        if _chroma_client:
+            try: _chroma_client.clear_system_cache()
+            except: pass
             _chroma_client = None
-            print("   ✅ Client Chroma liberado")
         
-        # 3. Força coleta de lixo agressiva
         gc.collect()
-        gc.collect()  # Duas vezes para garantir
-        
-        # 4. No Windows, precisa esperar mais
-        time.sleep(3)
-        
-        print("✅ Vectorstore completamente fechado")
-        
+        time.sleep(1) 
     except Exception as e:
-        print(f"⚠️ Erro ao fechar vectorstore: {e}")
-        vectorstore = None
-        _chroma_client = None
+        print(f"⚠️ Erro ao fechar: {e}")
 
 # --- 4. ENDPOINTS ---
 
@@ -186,36 +171,19 @@ class QueryRequest(BaseModel):
 
 @app.post("/chat")
 async def chat_endpoint(request: QueryRequest):
-    """Endpoint público para chat com a base de conhecimento"""
     try:
         embeddings, llm = get_llm_components()
         vs = get_vectorstore()
         
-        # DEBUG: Ver o que está na base
-        docs = vs.get()
-        print(f"📊 Total de chunks na base: {len(docs['ids'])}")
-        
-        # LÓGICA RAG MODERNA (LCEL)
-        retriever = vs.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": 8}
-        )
-        
-        # DEBUG: Ver o que está sendo recuperado
-        retrieved_docs = retriever.invoke(request.question)
-        print(f"🔍 Chunks recuperados para a pergunta: {len(retrieved_docs)}")
-        
-        for i, doc in enumerate(retrieved_docs):
-            print(f"📄 Chunk {i+1}: {doc.page_content[:200]}...")
+        # Busca mais chunks para ter mais contexto
+        retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 6})
         
         system_prompt = (
-            "Você é um assistente especializado em documentos oficiais da Polícia Federal. "
-            "Analise cuidadosamente os contextos fornecidos para encontrar informações ESPECÍFICAS como nomes, matrículas, cargos e datas. "
-            "SE os contextos contiverem listas, tabelas ou designações de servidores, EXTRAIA TODOS os nomes e informações relevantes. "
-            "NÃO generalize nem resuma demais - seja preciso e detalhado com informações de designação de pessoal. "
-            "Se a informação não estiver completa nos contextos, indique o que foi possível encontrar e sugira verificar o documento original."
-            "\n\n"
-            "Contextos relevantes:\n{context}"
+            "Você é um assistente especializado em documentos oficiais. "
+            "Responda com base EXCLUSIVAMENTE nos contextos fornecidos abaixo. "
+            "Se a resposta não estiver no contexto, diga que não sabe. "
+            "Cite o nome do documento fonte sempre que possível."
+            "\n\nContextos:\n{context}"
         )
         
         prompt = ChatPromptTemplate.from_messages([
@@ -224,7 +192,7 @@ async def chat_endpoint(request: QueryRequest):
         ])
         
         def format_docs(docs):
-            return "\n\n".join(doc.page_content for doc in docs)
+            return "\n\n".join(f"[Doc: {d.metadata.get('source', 'Desconhecido')}] {d.page_content}" for d in docs)
         
         rag_chain = (
             {"context": retriever | format_docs, "question": RunnablePassthrough()}
@@ -234,9 +202,10 @@ async def chat_endpoint(request: QueryRequest):
         
         response = rag_chain.invoke(request.question)
         
-        # Coleta fontes
+        # Recupera fontes para o frontend
         sources = []
-        for doc in retrieved_docs:
+        docs = retriever.invoke(request.question)
+        for doc in docs:
             sources.append({
                 "name": os.path.basename(doc.metadata.get('source', 'Desconhecido')),
                 "page": doc.metadata.get('page', 'N/A')
@@ -245,304 +214,85 @@ async def chat_endpoint(request: QueryRequest):
         return {"answer": response.content, "sources": sources}
 
     except Exception as e:
-        print(f"Erro: {e}")
-        return {"answer": "Erro ao processar sua pergunta.", "sources": []}
+        print(f"❌ Erro no Chat: {e}")
+        # Retorna erro JSON em vez de 500 para o frontend tratar
+        return {"answer": "Desculpe, ocorreu um erro interno no servidor de IA.", "sources": []}
 
 @app.get("/documentos")
 async def listar_documentos(username: str = Depends(verificar_credenciais)):
-    """Lista documentos indexados na base (protegido)"""
     try:
         vs = get_vectorstore()
         docs = vs.get()
-        documentos_unicos = set()
-        
-        for metadata in docs['metadatas']:
-            if 'source' in metadata:
-                doc_name = os.path.basename(metadata['source'])
-                if doc_name and doc_name != 'Desconhecido':
-                    documentos_unicos.add(doc_name)
-        
-        return {
-            "documentos": list(documentos_unicos), 
-            "total_chunks": len(docs['ids'])
-        }
-    
+        unique_docs = list(set(
+            os.path.basename(m.get('source', '')) for m in docs['metadatas'] if m.get('source')
+        ))
+        return {"documentos": unique_docs, "total_chunks": len(docs['ids'])}
     except Exception as e:
-        return {"documentos": [], "total_chunks": 0, "erro": str(e)}
-
-@app.delete("/limpar_uploads")
-async def limpar_uploads(username: str = Depends(verificar_credenciais)):
-    """Limpa apenas os arquivos uploadados, mantém a base"""
-    try:
-        if os.path.exists(UPLOAD_DIR):
-            shutil.rmtree(UPLOAD_DIR)
-            os.makedirs(UPLOAD_DIR, exist_ok=True)
-        return {"status": "Uploads limpos com sucesso"}
-    except Exception as e:
-        return {"status": "erro", "detalhes": str(e)}
+        return {"documentos": [], "erro": str(e)}
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...), username: str = Depends(verificar_credenciais)):
-    """Upload e indexação de documentos PDF/DOCX"""
     try:
-        # Salva o arquivo
+        print(f"📥 Recebendo upload: {file.filename}")
         file_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Carrega o documento
         if file.filename.lower().endswith(".pdf"):
             loader = PyPDFLoader(file_path)
         elif file.filename.lower().endswith(".docx"):
             loader = Docx2txtLoader(file_path)
         else:
-            return {"error": "Formato inválido. Use PDF ou DOCX."}
+            return {"error": "Apenas PDF ou DOCX"}
         
         docs = loader.load()
-        
-        # Divide em chunks
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=600,
-            chunk_overlap=100,
-            separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""],
-        )
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
         chunks = text_splitter.split_documents(docs)
 
-        # ✅ CORREÇÃO: Adiciona os chunks ao vectorstore
         vs = get_vectorstore()
         vs.add_documents(chunks)
         
-        print(f"✅ Documento '{file.filename}' indexado com {len(chunks)} chunks")
-
+        print(f"✅ Indexado: {len(chunks)} trechos.")
         return {"status": "sucesso", "chunks": len(chunks), "documento": file.filename}
 
     except Exception as e:
-        print(f"❌ Erro no upload: {e}")
+        print(f"❌ Erro Upload: {e}")
         return {"status": "erro", "detalhes": str(e)}
 
 @app.delete("/limpar_base")
 async def limpar_base(username: str = Depends(verificar_credenciais)):
-    """Limpeza completa da base - versão Windows-safe"""
     global vectorstore, _chroma_client
-    
     try:
-        print("🧹 INICIANDO LIMPEZA (Windows-safe)...")
-        
-        # ============================================
-        # ESTRATÉGIA 1: Reset via API do Chroma
-        # ============================================
-        print("🔄 Tentando reset via API do Chroma...")
-        
-        try:
-            if _chroma_client is not None:
-                # ✅ Método mais limpo: usa o reset do próprio Chroma
-                _chroma_client.reset()
-                print("✅ Reset do Chroma executado!")
-                
-                # Fecha tudo
-                close_vectorstore()
-                time.sleep(2)
-                
-                # Remove pasta agora que está liberada
-                if os.path.exists(PERSIST_DIRECTORY):
-                    shutil.rmtree(PERSIST_DIRECTORY)
-                    print("✅ Pasta removida após reset")
-                
-                # Limpa uploads
-                if os.path.exists(UPLOAD_DIR):
-                    shutil.rmtree(UPLOAD_DIR)
-                os.makedirs(UPLOAD_DIR, exist_ok=True)
-                
-                # Recria vectorstore vazio
-                vs = get_vectorstore()
-                docs = vs.get()
-                
-                return {
-                    "status": "Base COMPLETAMENTE limpa (via reset)",
-                    "chunks_restantes": len(docs['ids'])
-                }
-                
-        except Exception as reset_error:
-            print(f"⚠️ Reset falhou: {reset_error}")
-        
-        # ============================================
-        # ESTRATÉGIA 2: Deletar coleção e recriar
-        # ============================================
-        print("🔄 Tentando deletar coleção...")
-        
-        try:
-            if _chroma_client is not None:
-                # Deleta a coleção em vez da pasta
-                try:
-                    _chroma_client.delete_collection("govbot_docs")
-                    print("✅ Coleção deletada!")
-                except:
-                    pass
-                
-                # Fecha e recria
-                close_vectorstore()
-                time.sleep(2)
-                
-                # Tenta remover pasta
-                if os.path.exists(PERSIST_DIRECTORY):
-                    try:
-                        shutil.rmtree(PERSIST_DIRECTORY)
-                    except:
-                        pass
-                
-                # Limpa uploads
-                if os.path.exists(UPLOAD_DIR):
-                    try:
-                        shutil.rmtree(UPLOAD_DIR)
-                    except:
-                        pass
-                os.makedirs(UPLOAD_DIR, exist_ok=True)
-                
-                # Recria
-                vs = get_vectorstore()
-                docs = vs.get()
-                
-                return {
-                    "status": "Base limpa (coleção recriada)",
-                    "chunks_restantes": len(docs['ids'])
-                }
-                
-        except Exception as delete_error:
-            print(f"⚠️ Delete coleção falhou: {delete_error}")
-        
-        # ============================================
-        # ESTRATÉGIA 3: Forçar fechamento e deletar
-        # ============================================
-        print("🔄 Tentando força bruta...")
-        
-        # Fecha tudo
+        if _chroma_client:
+            _chroma_client.reset()
         close_vectorstore()
-        
-        # Espera mais tempo no Windows
-        print("⏳ Aguardando liberação de arquivos (5s)...")
-        time.sleep(5)
-        
-        # Força gc novamente
-        gc.collect()
-        gc.collect()
-        
-        # Tenta deletar
         if os.path.exists(PERSIST_DIRECTORY):
-            try:
-                shutil.rmtree(PERSIST_DIRECTORY)
-                print("✅ Pasta removida!")
-            except PermissionError:
-                # ============================================
-                # ESTRATÉGIA 4: Marcar para deletar no restart
-                # ============================================
-                print("⚠️ Arquivos bloqueados - marcando para limpeza no restart")
-                
-                # Cria arquivo de flag
-                with open(".cleanup_needed", "w") as f:
-                    f.write("cleanup")
-                
-                # Limpa uploads pelo menos
-                if os.path.exists(UPLOAD_DIR):
-                    try:
-                        shutil.rmtree(UPLOAD_DIR)
-                    except:
-                        pass
-                os.makedirs(UPLOAD_DIR, exist_ok=True)
-                
-                return {
-                    "status": "parcial",
-                    "detalhes": "Arquivos bloqueados pelo Windows. REINICIE O SERVIDOR para completar a limpeza.",
-                    "acao_necessaria": "Pare o servidor (Ctrl+C) e inicie novamente"
-                }
-        
-        # Limpa uploads
+            shutil.rmtree(PERSIST_DIRECTORY)
         if os.path.exists(UPLOAD_DIR):
             shutil.rmtree(UPLOAD_DIR)
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
+            os.makedirs(UPLOAD_DIR)
         
-        # Recria
-        vs = get_vectorstore()
-        docs = vs.get()
-        
-        return {
-            "status": "Base COMPLETAMENTE limpa",
-            "chunks_restantes": len(docs['ids'])
-        }
-        
+        # Re-inicializa
+        get_vectorstore()
+        return {"status": "Base limpa com sucesso"}
     except Exception as e:
-        print(f"💥 ERRO: {e}")
         return {"status": "erro", "detalhes": str(e)}
 
-@app.get("/verificar_limpeza")
-async def verificar_limpeza(username: str = Depends(verificar_credenciais)):
-    """Verifica o estado atual da base"""
+@app.delete("/limpar_uploads")
+async def limpar_uploads(username: str = Depends(verificar_credenciais)):
     try:
-        import psutil
-        
-        chroma_processes = []
-        if os.path.exists(PERSIST_DIRECTORY):
-            for proc in psutil.process_iter(['pid', 'name', 'open_files']):
-                try:
-                    if proc.info['open_files']:
-                        for file in proc.info['open_files']:
-                            if PERSIST_DIRECTORY in file.path:
-                                chroma_processes.append({
-                                    'pid': proc.info['pid'],
-                                    'name': proc.info['name'],
-                                    'file': file.path
-                                })
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-        
-        return {
-            "chroma_directory_exists": os.path.exists(PERSIST_DIRECTORY),
-            "chroma_files": os.listdir(PERSIST_DIRECTORY) if os.path.exists(PERSIST_DIRECTORY) else [],
-            "processos_bloqueando": chroma_processes,
-            "pasta_db_chroma_tamanho": sum(
-                f.stat().st_size for f in os.scandir(PERSIST_DIRECTORY) if f.is_file()
-            ) if os.path.exists(PERSIST_DIRECTORY) else 0
-        }
-    except ImportError:
-        return {"erro": "psutil não instalado. Execute: pip install psutil"}
+        if os.path.exists(UPLOAD_DIR):
+            shutil.rmtree(UPLOAD_DIR)
+            os.makedirs(UPLOAD_DIR)
+        return {"status": "Uploads limpos"}
     except Exception as e:
-        return {"erro": str(e)}
-
-@app.get("/debug_chroma")
-async def debug_chroma(username: str = Depends(verificar_credenciais)):
-    """Debug completo do ChromaDB"""
-    try:
-        vs = get_vectorstore()
-        docs = vs.get()
-        
-        chroma_files = []
-        if os.path.exists(PERSIST_DIRECTORY):
-            for root, dirs, files in os.walk(PERSIST_DIRECTORY):
-                for file in files:
-                    chroma_files.append(os.path.join(root, file))
-        
-        return {
-            "chroma_persist_directory": PERSIST_DIRECTORY,
-            "chroma_directory_exists": os.path.exists(PERSIST_DIRECTORY),
-            "total_chunks": len(docs['ids']),
-            "documentos": list(set(
-                os.path.basename(meta.get('source', 'Unknown')) 
-                for meta in docs['metadatas'] if 'source' in meta
-            )),
-            "chroma_files": chroma_files,
-            "upload_dir_files": os.listdir(UPLOAD_DIR) if os.path.exists(UPLOAD_DIR) else []
-        }
-    
-    except Exception as e:
-        return {"erro": str(e)}
+        return {"status": "erro", "detalhes": str(e)}
 
 @app.get("/")
 async def root():
-    return {
-        "message": "GovBot API está rodando!", 
-        "version": "5.1 - Corrigido",
-        "status": "Gemini + Embeddings locais"
-    }
+    return {"status": "Online", "version": "7.0 - Offline Model Forced"}
 
 if __name__ == "__main__":
     import uvicorn
+    # Host 0.0.0.0 é vital para acesso na rede
     uvicorn.run(app, host="0.0.0.0", port=8000)

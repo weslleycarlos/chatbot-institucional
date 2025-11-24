@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, Lock, FileText, CheckCircle, AlertCircle, Trash2, Database, RefreshCw, ArrowLeft, Settings } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://10.61.172.6:8000";
 
 export default function AdminPage() {
   const navigate = useNavigate();

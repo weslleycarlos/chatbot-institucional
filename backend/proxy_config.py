@@ -11,9 +11,8 @@ def configurar_proxy():
 
     if not http_proxy:
         # Se não tiver definido, às vezes é necessário forçar (exemplo fictício)
-        # os.environ["HTTP_PROXY"] = "http://seu.proxy.aqui:8080"
-        # os.environ["HTTPS_PROXY"] = "http://seu.proxy.aqui:8080"
-        pass
+        os.environ["HTTP_PROXY"] = "http://proxy.dpf.gov.br:8080"
+        os.environ["HTTPS_PROXY"] = "http://proxy.dpf.gov.br:8080"
     else:
         print(f"📡 Proxy detectado: {http_proxy}")
 
