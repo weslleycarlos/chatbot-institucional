@@ -7,17 +7,21 @@ from watchdog.events import FileSystemEventHandler
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Carrega variáveis de ambiente
+load_dotenv()
 
 # --- CONFIGURAÇÃO ---
 # Caminho da pasta sincronizada do OneDrive/SharePoint
-PASTA_SHAREPOINT = r"C:\Users\Weslley\Polícia Federal\Intranet Polícia Federal - Boletins de Serviço"
+PASTA_SHAREPOINT = os.getenv("PASTA_SHAREPOINT", r"C:\Users\Weslley\Polícia Federal\Intranet Polícia Federal - Boletins de Serviço")
 
 # URL da sua API Local (GovBot)
-API_URL = "http://127.0.0.1:8000/upload"
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000") + "/upload"
 
 # Senha de admin definida no backend/main.py
-ADMIN_USER = "admin"
-ADMIN_PASS = "senha_secreta_123"
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "senha_secreta_123")
 
 # Configurações de processamento
 DEBOUNCE_SEGUNDOS = 10  # Tempo mínimo entre processamentos do mesmo arquivo

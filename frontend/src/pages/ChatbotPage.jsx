@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Bot, User, FileText, Settings, RotateCcw, AlertCircle, Loader2 } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || "http://10.61.172.6:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 // Limite de caracteres para o input
 const MAX_INPUT_LENGTH = 2000;
