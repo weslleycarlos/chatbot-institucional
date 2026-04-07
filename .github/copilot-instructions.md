@@ -1,58 +1,60 @@
-# GovBot – AI Agent Instructions
+# GovBot - Workspace Instructions
 
-Concise guidance for AI coding agents to be immediately productive in this repo. Focus on the actual patterns and workflows used here.
+Concise guidance for coding agents to be productive quickly in this repo.
 
 ## Overview
 - Stack: FastAPI RAG backend + React/Vite frontend.
-- Purpose: Chat over institutional docs (PDF/DOCX) with sources via Chroma + HuggingFace embeddings and Google Gemini LLM.
-- Key paths: backend main API in `backend/main.py`; admin UI in `frontend/src/pages/AdminPage.jsx`; chat UI in `frontend/src/pages/ChatbotPage.jsx`.
+- Purpose: institutional-document chat (PDF/DOCX) with cited sources.
+- Primary files: `backend/main.py`, `backend/proxy_config.py`, `frontend/src/pages/ChatbotPage.jsx`, `frontend/src/pages/AdminPage.jsx`.
 
-## Runtime & Environment
-- Backend env: set `GOOGLE_API_KEY` and `ADMIN_PASS` in `backend/.env` (see `README.md`).
-- Frontend env: set `VITE_API_URL` (e.g. `http://localhost:8000`). The code falls back to a static IP if unset.
-- Proxy: `backend/proxy_config.py` sets `HTTP_PROXY/HTTPS_PROXY` if missing; `configurar_proxy()` is called on startup.
-- Offline embeddings model: place the files for `sentence-transformers/all-MiniLM-L6-v2` under `backend/modelo_local/`. If this folder is empty, the app attempts an online download (likely blocked by proxy).
+## Build and Run
+- Windows first setup: `configurar_ambiente.bat`.
+- Windows dev start: `iniciar_dev.bat`.
+- Backend manual run (from `backend/` with venv active): `uvicorn main:app --host 0.0.0.0 --port 8000 --reload`.
+- Frontend run (from `frontend/`): `npm run dev`.
+- Frontend build: `npm run build`.
+- Tests: no automated test suite is configured; validate via API calls and UI flows.
 
-## Data Flow
-- Upload: Admin uploads PDF/DOCX → `PyPDFLoader`/`Docx2txtLoader` → `RecursiveCharacterTextSplitter` (`chunk_size=800`, `chunk_overlap=100`) → add to Chroma.
-- Store: Persistent Chroma at `./db_chroma` (relative to backend). Uploads stored in `./uploads`.
-- Chat: `/chat` builds RAG chain with retriever `k=6`, formats docs, applies system prompt, invokes Gemini; returns `answer` + `sources`.
-- Sources: backend returns `[ { name: <file>, page: <page|N/A> }, ... ]`; frontend deduplicates by `name-page`.
+## Runtime and Config
+- Required backend env: `ADMIN_PASS` plus provider-specific API key.
+- LLM is configurable via `LLM_PROVIDER` (`gemini`, `groq`, `openai`) and optional `LLM_MODEL`.
+- If `LLM_MODEL` is empty, defaults are assigned by provider in `Config.validate()`.
+- Frontend API base uses `VITE_API_URL`.
+- `backend/proxy_config.py` configures proxy variables at startup when needed.
 
-## API Surface (backend/main.py)
-- `POST /chat`: body `{ question: string }` → `{ answer, sources }`; returns friendly JSON errors (not HTTP 500) for UI handling.
-- `GET /documentos` (Basic Auth): returns indexed docs + `total_chunks`.
-- `POST /upload` (Basic Auth): accepts `file` (PDF/DOCX); indexes into Chroma.
-- `DELETE /limpar_base` (Basic Auth): resets Chroma and clears uploads.
-- `DELETE /limpar_uploads` (Basic Auth): clears only `./uploads`.
-- `GET /`: health with version string.
-- Auth: `ADMIN_USER="admin"`; password from env (`ADMIN_PASS`). Frontend sends `Authorization: Basic`.
+## Architecture and Data Flow
+- Upload flow: Admin uploads PDF/DOCX -> loader (`PyPDFLoader` or `Docx2txtLoader`) -> split (`CHUNK_SIZE=1200`, `CHUNK_OVERLAP=400`) -> Chroma persist.
+- Storage paths (backend working dir): `./db_chroma` for vectors and `./uploads` for uploaded files.
+- Chat flow: question validation -> query variations (+ optional HyDE) -> semantic retrieval + BM25 merge -> LLM -> markdown cleanup -> `{ answer, sources }`.
+- Source metadata returned as `{ name, page }`, and frontend deduplicates by `name-page`.
 
-## Frontend Patterns
-- Routing: `/` → chat; `/admin` → admin panel (`react-router-dom` in `src/main.jsx`).
-- Admin: loads docs/stats with Basic Auth; supports file input + drag&drop; calls `/limpar_base` and `/limpar_uploads`.
-- Chat: `POST ${VITE_API_URL}/chat` with 60s timeout + AbortController; shows errors user-friendly; displays source chips.
-- Vite dev server: `vite.config.js` sets `host: true`, `port: 5173` (LAN access).
+## API Surface
+- `GET /`: status summary (includes selected provider/model metadata).
+- `GET /health`: runtime health and vectorstore status.
+- `POST /chat`: main RAG endpoint.
+- `GET /documentos` (Basic Auth): indexed docs + chunk counts.
+- `POST /upload` (Basic Auth): index PDF/DOCX.
+- `DELETE /limpar_base` (Basic Auth): reset Chroma and clear uploads.
+- `DELETE /limpar_uploads` (Basic Auth): clear uploads only.
 
-## Developer Workflows (Windows)
-- First-time setup: run `configurar_ambiente.bat` (creates venv, installs Python deps incl. `numpy`, then runs `npm install`).
-- Dev run: `iniciar_dev.bat` (starts `uvicorn main:app --host 0.0.0.0 --port 8000 --reload` and `npm run dev`).
-- Repair Python env: `backend/reparar_ambiente.bat` (uninstalls conflicting LangChain pkgs, reinstalls from `requirements.txt`).
-- Manual backend: from `backend/venv`, run `uvicorn main:app --reload`.
+## Project Conventions
+- Keep `/chat` behavior compatible with frontend: return friendly JSON error payloads instead of uncaught HTTP 500 responses.
+- Keep backend and frontend in sync when changing endpoint names or response shapes.
+- Admin auth is Basic Auth (`ADMIN_USER` defaults to `admin`, password from `ADMIN_PASS`); frontend keeps admin password in local component state.
+- Chroma lifecycle is explicit: cleanup/reinitialize logic is part of `limpar_base` and shutdown flow.
+- Favor local/offline embeddings model under `backend/modelo_local/all-MiniLM-L6-v2` in corporate/proxy environments.
 
-## Conventions & Gotchas
-- Embeddings forced to local folder when available; proxy may block online downloads.
-- Chroma lifecycle: global client; `close_vectorstore()` cleans caches; `limpar_base` resets and reinitializes.
-- CORS open: `allow_origins=["*"]` for LAN access.
-- Admin endpoints require Basic Auth; UI stores password in state (no sessions).
-- Error handling: `/chat` returns JSON error messages the UI renders—don’t change to HTTP 500 unless UI is updated.
-- SharePoint watcher: `backend/sharepoint_watcher.py` monitors a local synced folder, retries uploads to `/upload`, and uses Basic Auth; configure `PASTA_SHAREPOINT`, `API_URL`, and credentials.
+## Gotchas
+- `ADMIN_PASS` is mandatory and must have at least 8 characters; startup validation fails otherwise.
+- Corporate proxy can block model downloads and some providers; do not assume open internet access.
+- `HYDE_ENABLED=true` increases latency noticeably.
+- Deleting `db_chroma` removes indexed knowledge.
 
-## Examples
-- Call chat:
-  - Request: `{ "question": "Qual é a portaria X?" }`
-  - Response: `{ "answer": "...", "sources": [{ "name": "Boletim.pdf", "page": 12 }] }`
-- Admin upload: send `multipart/form-data` with `file: <PDF/DOCX>`; expect `{ status: "sucesso", chunks, documento }`.
-- Clearing base: `DELETE /limpar_base` with Basic Auth → `{ status: "Base limpa com sucesso" }`.
+## Link, Do Not Duplicate
+- Setup and usage details: `README.md`, `docs/QUICKSTART.md`.
+- Full API reference: `docs/ENDPOINTS_API_CONFIGURACAO.md`.
+- Corporate deployment/proxy guidance: `docs/IMPLEMENTACAO_CORPORATIVA.md`, `docs/CONFIGURACAO_PROXY_GROQ.md`, `docs/TROUBLESHOOTING_PROXY_GROQ.md`.
+- LLM/model decisions: `docs/REFATOR_LLM_PARAMETRIZAVEL.md`, `docs/CATALOGO_MODELOS_OPEN_SOURCE.md`, `docs/MUDANCAS_EMBEDDING_MODELS.md`.
+- Contribution conventions: `.github/CONTRIBUTING.md`.
 
-Keep changes aligned with these patterns. If altering endpoints or response shapes, update both backend and the corresponding frontend calls/components.
+If changing core behavior, update both code and linked docs in the same PR.
